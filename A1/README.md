@@ -1,3 +1,3 @@
--[Assignment PDF](./COL778_2302_A1.pdf)
--[Code](./A1.py)
--[Report](./report.pdf)
+- [Assignment PDF](./COL778_2302_A1.pdf)
+- [Code](./A1.py)
+- [Report](./report.pdf)
