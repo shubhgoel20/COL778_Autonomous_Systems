@@ -1,11 +1,13 @@
-#This file is a part of COL778 A4
+#This file is a part of COL864 A2
 import os
 import time
 
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), "../"))
+# sys.stdout = open(os.path.join(os.path.dirname(__file__), "../../out.txt"), "a")
+# sys.stderr = open(os.path.join(os.path.dirname(__file__), "../../err.txt"), "a")
 
-import  gym
+import gym
 import numpy as np
 import torch
 
@@ -17,7 +19,7 @@ from utils.logger import Logger
 
 MAX_NVIDEO = 2
 
-def setup_agent(args, configs):
+def setup_agent(args, configs, load_checkpoint):
     global env, agent
     
     env = gym.make(args.env_name,render_mode=None)
@@ -31,19 +33,20 @@ def setup_agent(args, configs):
         from agents.mujoco_agents import ImitationAgent as Agent    
     elif args.exp_name == "RL":
         from agents.mujoco_agents import RLAgent as Agent
+    elif args.exp_name == "imitation-RL":
+        from agents.mujoco_agents import ImitationSeededRL as Agent
     else:
         raise ValueError(f"Invalid experiment name {args.exp_name}")
 
     agent = Agent(ob_dim, ac_dim, args, **configs['hyperparameters'])
     if args.load_checkpoint is not None:
-        agent.load_state_dict(torch.load(args.load_checkpoint))
-
-
-
+        state_dict = torch.load(load_checkpoint)
+        state_dict = {key: value for key, value in state_dict.items() if "expert_policy" not in key}
+        agent.load_state_dict(state_dict)
 
 def train_agent(args, configs):
     logger = Logger(args.logdir)
-    max_ep_len = configs.get("episode_len", None) or env.spec.max_episode_steps
+    max_ep_len =  env.spec.max_episode_steps
     # set random seeds
     ptu.init_gpu(use_gpu=not args.no_gpu, gpu_id=args.which_gpu)
 
@@ -60,6 +63,10 @@ def train_agent(args, configs):
 
     for itr in range(configs['num_iteration']):
         print(f"\n********** Iteration {itr} ************")
+        curr_time = time.time()
+        time_elapsed = curr_time - start_time
+        if time_elapsed > args.time_limit:
+            break
         
         #train one iteration of the agent and return the loss and the training trajectory
         train_info = agent.train_iteration(env, envsteps_so_far = total_envsteps, render=False, itr_num = itr)
@@ -73,17 +80,19 @@ def train_agent(args, configs):
                 env, agent.get_action, 15*max_ep_len, max_ep_len
             )
             # train_info = {'episode_loss':0, 'trajectories':eval_trajs} # dummy values used for testing
-
-            logs = utils.compute_metrics(train_info['trajectories'], eval_trajs)
+            try:
+                logs = utils.compute_metrics(train_info['trajectories'], eval_trajs)
+            except:
+                logs = utils.compute_eval_metrics(eval_trajs)
             # compute additional metrics
             logs.update({'train_loss':train_info['episode_loss']})
 
             logs["Train_EnvstepsSoFar"] = total_envsteps
             logs["TimeSinceStart"] = time.time() - start_time
-            if itr == 0:
-                logs["Initial_DataCollection_AverageReturn"] = logs[
-                    "Train_AverageReturn"
-                ]
+            # if itr == 0:
+            #     logs["Initial_DataCollection_AverageReturn"] = logs[
+            #         "Train_AverageReturn"
+            #     ]
 
             # perform the logging
             for key, value in logs.items():
@@ -109,47 +118,57 @@ def train_agent(args, configs):
             )
 
 
-
 def main():
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--env_name", type=str, required=True)
-    parser.add_argument("--exp_name", type=str, choices = ["imitation", "RL"], required=True)
+    parser.add_argument("--exp_name", type=str, choices = ["imitation", "RL", "imitation-RL"], required=True)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--no_gpu", "-ngpu", action="store_true")
     parser.add_argument("--which_gpu", "-gpu_id", default=0)
-    parser.add_argument("--video_log_freq", type=int, default=-1)
-    parser.add_argument("--scalar_log_freq", type=int, default=1)
+    parser.add_argument("--video_log_freq", type=int, default=200)
+    parser.add_argument("--scalar_log_freq", type=int, default=50)
     parser.add_argument("--load_checkpoint", type=str, default=None)
+    parser.add_argument("--logdir_name", type=str, default="data")
+    parser.add_argument("--time_limit", type=int, default=-1)
 
     args = parser.parse_args()
 
+    
+    print("\n\n============================================")
+    print("Try Running train_agent.py with the following args:")
+    print(args)
+    print(f"GPU is not used? {args.no_gpu}")
+    print("============================================\n\n\n")
     configs = exp_config.configs[args.env_name][args.exp_name]
 
-    data_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../data")
-    model_save_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../models")
+    data_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), f"../../data_train")
+
+    # model_save_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), f"../../data_train")
     if not (os.path.exists(data_path)):
         os.makedirs(data_path)
 
-    logdir = (
-        args.exp_name
-        + "_"
-        + args.env_name
-        + "_"
-        + time.strftime("%d-%m-%Y_%H-%M-%S")
-    )
-    logdir = os.path.join(data_path, logdir)
+    # logdir = (
+    #     args.exp_name
+    #     + "_"
+    #     + args.env_name
+    #     + "_"
+    #     + time.strftime("%d-%m-%Y_%H-%M-%S")
+    # )
+    logdir =data_path
     args.logdir = logdir
     if not (os.path.exists(logdir)):
         os.makedirs(logdir)
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    print("Setting up agent...")
+    setup_agent(args, configs, None)
 
-    setup_agent(args, configs)
+    print("Training agent...")
     train_agent(args, configs)
-    torch.save(agent.state_dict(), os.path.join(model_save_path, "model_"+ args.env_name + "_"+ args.exp_name+".pth"))
+    torch.save(agent.state_dict(), os.path.join(data_path, "model_"+ args.env_name + "_"+ args.exp_name+".pth"))
 
 
 if __name__ == "__main__":
